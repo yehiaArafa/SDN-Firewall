@@ -4,8 +4,8 @@ import pox.openflow.libopenflow_01 as of
 from pox.lib.addresses import EthAddr
 from pox.lib.util import dpid_to_str
 from pox.lib.util import str_to_bool
-import time
 from pox.lib.addresses import EthAddr
+import time
 
 log = core.getLogger()
 
@@ -17,18 +17,22 @@ class LearningSwitch (object):
   """
   The learning switch "brain" associated with a single OpenFlow switch.
 
-  # When we see a packet, we'd like to output it on a port which will
-    eventually lead to the destination.
-  ** To accomplish this, we build a table that maps addresses to ports.
+  When we see a packet, we'd like to output it on a port which will
+  eventually lead to the destination.  To accomplish this, we build a
+  table that maps addresses to ports.
+  
+  **added**
+  check first if the packet src mac adress is in the firewall table
+  with value=true 
 
-  # We populate the table by observing traffic.  
-  ** When we see a packet from some source coming from some port, we know that source is out
-     that port.
+  We populate the table by observing traffic.  When we see a packet
+  from some source coming from some port, we know that source is out
+  that port.
 
-  ** When we want to forward traffic, we look up the desintation in our
-     table. If we don't know the port, we simply send the message out
-     all ports except the one it came in on.  (In the presence of loops, this is bad!).
-
+  When we want to forward traffic, we look up the desintation in our
+  table.  If we don't know the port, we simply send the message out
+  all ports except the one it came in on.  (In the presence of loops,
+  this is bad!).
   In short, our algorithm looks like this:
 
                 **For each packet from the switch**
@@ -168,12 +172,10 @@ class LearningSwitch (object):
     # 1
     self.macToPort[packet.src] = event.port 
 
-    #2
-    #Check the Firewall Rules
+    #2-Check the Firewall Rules
     if self.checkRule(dpid_to_str(event.connection.dpid), packet.src) == False:
       drop()
       return
-
 
     # 3
     if not self.transparent: 
