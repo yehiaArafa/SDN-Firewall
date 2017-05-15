@@ -1,9 +1,11 @@
 
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
+from pox.lib.addresses import EthAddr
 from pox.lib.util import dpid_to_str
 from pox.lib.util import str_to_bool
 import time
+from pox.lib.addresses import EthAddr
 
 log = core.getLogger()
 
@@ -15,42 +17,55 @@ class LearningSwitch (object):
   """
   The learning switch "brain" associated with a single OpenFlow switch.
 
-  When we see a packet, we'd like to output it on a port which will
-  eventually lead to the destination.
-  To accomplish this, we build a table that maps addresses to ports.
+  # When we see a packet, we'd like to output it on a port which will
+    eventually lead to the destination.
+  ** To accomplish this, we build a table that maps addresses to ports.
 
-  We populate the table by observing traffic.  When we see a packet
-  from some source coming from some port, we know that source is out
-  that port.
+  # We populate the table by observing traffic.  
+  ** When we see a packet from some source coming from some port, we know that source is out
+     that port.
 
-  When we want to forward traffic, we look up the desintation in our
-  table.  If we don't know the port, we simply send the message out
-  all ports except the one it came in on.  (In the presence of loops,
-  this is bad!).
+  ** When we want to forward traffic, we look up the desintation in our
+     table. If we don't know the port, we simply send the message out
+     all ports except the one it came in on.  (In the presence of loops, this is bad!).
 
   In short, our algorithm looks like this:
 
-  For each packet from the switch:
+                **For each packet from the switch**
+  
   1) Use source address and switch port to update address/port table
-  2) Is transparent = False and either Ethertype is LLDP or the packet's
+  
+  2) Is source Mac adress is in firwall table rules ?
+     Yes:
+        2a) IF table contain -FALSE-
+            then: Drop packet
+                  DONE
+        2b) IF table contain -TRUE-
+            then: Forward packet 
+                  go to step (3)
+     No: 
+        2aa) DROP packet
+             DONE
+
+  3) Is transparent = False and either Ethertype is LLDP or the packet's
      destination address is a Bridge Filtered address?
      Yes:
-        2a) Drop packet -- don't forward link-local traffic (LLDP, 802.1x)
+        3a) Drop packet -- don't forward link-local traffic (LLDP, 802.1x)
             DONE
-  3) Is destination multicast?
+  4) Is destination multicast?
      Yes:
-        3a) Flood the packet
-            DONE
-  4) Port for destination address in our address/port table?
-     No:
         4a) Flood the packet
             DONE
-  5) Is output port the same as input port?
+  5) Port for destination address in our address/port table?
+     No:
+        5a) Flood the packet
+            DONE
+  6) Is output port the same as input port?
      Yes:
-        5a) Drop packet and similar ones for a while
-  6) Install flow table entry in the switch so that this
+        6a) Drop packet and similar ones for a while
+  7) Install flow table entry in the switch so that this
      flow goes out the appopriate port
-     6a) Send the packet out appropriate port
+     7a) Send the packet out appropriate port
   """
   def __init__ (self, connection, transparent):
     # Switch we'll be adding L2 learning switch capabilities to
@@ -60,8 +75,17 @@ class LearningSwitch (object):
     # Our table
     self.macToPort = {}
 
+    # firewall stuff
+    
+
     #firewall table
     self.firewall={}
+    
+    #add rules - this should be from a CSV file or a GUI
+    self.addRule('00-00-00-00-00-01',EthAddr('00:00:00:00:00:01'))
+    self.addRule('00-00-00-00-00-01',EthAddr('00:00:00:00:00:02'))
+
+    
 
     # We want to hear PacketIn messages, so we listen
     # to the connection
@@ -72,6 +96,23 @@ class LearningSwitch (object):
 
     #log.debug("Initializing LearningSwitch, transparent=%s",
     #          str(self.transparent))
+
+
+  def addRule(self,dpistr,src=0,value=True):
+    self.firewall[(dpistr,src)]=value
+    log.debug("Adding firewall rule in %s: %s", dpistr, src) 
+
+  def checkRule(self,dpistr,src=0):
+    try:
+      entry = self.firewall[(dpistr, src)]
+      if (entry == True):
+        log.debug("Rule (%s) found in %s: FORWARD",src, dpistr)
+      else:
+        log.debug("Rule (%s) found in %s: DROP",src, dpistr)
+      return entry
+    except KeyError:
+      log.debug("Rule (%s) NOT found in %s: DROP",src, dpistr)
+      return False 
 
   def _handle_PacketIn (self, event):
     """
@@ -124,27 +165,38 @@ class LearningSwitch (object):
         msg.in_port = event.port
         self.connection.send(msg)
 
-    self.macToPort[packet.src] = event.port # 1
+    # 1
+    self.macToPort[packet.src] = event.port 
 
-    if not self.transparent: # 2
+    #2
+    #Check the Firewall Rules
+    if self.checkRule(dpid_to_str(event.connection.dpid), packet.src) == False:
+      drop()
+      return
+
+
+    # 3
+    if not self.transparent: 
       if packet.type == packet.LLDP_TYPE or packet.dst.isBridgeFiltered():
-        drop() # 2a
+        drop() # 3a
         return
-
+    #4
     if packet.dst.is_multicast:
-      flood() # 3a
+      flood() # 4a
     else:
-      if packet.dst not in self.macToPort: # 4
-        flood("Port for %s unknown -- flooding" % (packet.dst,)) # 4a
+      #5
+      if packet.dst not in self.macToPort: 
+        flood("Port for %s unknown -- flooding" % (packet.dst,)) # 5a
       else:
         port = self.macToPort[packet.dst]
-        if port == event.port: # 5
-          # 5a
+        #6
+        if port == event.port: # 6a
           log.warning("Same port for packet from %s -> %s on %s.%s.  Drop."
               % (packet.src, packet.dst, dpid_to_str(event.dpid), port))
           drop(10)
           return
-        # 6
+        
+        # 7
         log.debug("installing flow for %s.%i -> %s.%i" %
                   (packet.src, event.port, packet.dst, port))
         msg = of.ofp_flow_mod()
